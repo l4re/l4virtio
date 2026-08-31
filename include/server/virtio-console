@@ -496,16 +496,37 @@ public:
     if (!q->ready())
       return -L4_ENODEV;
 
-    Virtqueue::Request r = q->next_avail();
-    if (!r)
-      return -L4_EBUSY;
+    Virtqueue::Request r;
+
+    try
+      {
+        r = q->next_avail();
+        if (!r)
+          return -L4_EBUSY;
+      }
+    catch (Bad_avail_entry const &)
+      {
+        device_error();
+        return -L4_EBUSY;
+      }
 
     Request_processor rp;
     Control_request req;
-    rp.start(this, r, &req);
 
-    if (req.len < sizeof(Control_message))
-      return -L4_ENOMEM;
+    try
+      {
+        rp.start(this, r, &req);
+
+        if (req.len < sizeof(Control_message))
+          throw Bad_descriptor(&rp, Bad_descriptor::Bad_size);
+      }
+    catch (Bad_descriptor const &d)
+      {
+        q->finish(r, this);
+        if (d.error != Bad_descriptor::Bad_size)
+          device_error();
+        return -L4_ENOMEM;
+      }
 
     Control_message msg(idx, event, value);
 
@@ -553,22 +574,41 @@ public:
 
     int ret = L4_EOK;
     Virtqueue::Request r;
-    while ((r = q->next_avail()))
+    while (q->ready())
       {
-        Request_processor rp;
-        Control_request req;
-
-        rp.start(this, r, &req);
-
-        Control_message msg;
-        if (req.len < sizeof(msg))
+        try
           {
-            // Just ignore malformed input.
-            q->finish(r, this);
+            r = q->next_avail();
+            if (!r)
+              break;
+          }
+        catch (Bad_avail_entry const &)
+          {
+            device_error();
             ret = -L4_EINVAL;
             continue;
           }
 
+        Request_processor rp;
+        Control_request req;
+
+        try
+          {
+            rp.start(this, r, &req);
+
+            if (req.len < sizeof(Control_message))
+              throw Bad_descriptor(&rp, Bad_descriptor::Bad_size);
+          }
+        catch (Bad_descriptor const &d)
+          {
+            q->finish(r, this);
+            if (d.error != Bad_descriptor::Bad_size)
+              device_error();
+            ret = -L4_EINVAL;
+            continue;
+          }
+
+        Control_message msg;
         memcpy(&msg, req.msg, sizeof(msg));
         q->finish(r, this);
 
