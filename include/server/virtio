@@ -75,6 +75,15 @@ struct Dev_features
   CXX_BITFIELD_MEMBER(29, 29, ring_event_idx, raw);
 };
 
+/**
+ * Exception used by Queue when the driver puts an out-of-bounds descriptor
+ * into the available ring.
+ */
+struct Bad_avail_entry
+{
+  char const *message() const
+  { return "Available ring contains an invalid descriptor index"; }
+};
 
 /**
  * Virtqueue implementation for the device
@@ -129,6 +138,8 @@ public:
    * \pre The queue must be in working state.
    * \return A Request for the next available descriptor, the Request is invalid
    *         if there are no descriptors in the available ring.
+   * \throws Bad_avail_entry  If the descriptor read from the available ring
+   *                          points beyond the descriptor table.
    * \note The return value must be checked even when a previous desc_avail()
    *       returned true.
    *
@@ -139,8 +150,15 @@ public:
       {
         rmb();
         unsigned head = _current_avail & _idx_mask;
+        l4_uint16_t descno = _avail->ring[head];
+
+        // validate the head descriptor index written by the driver
+        if (L4_UNLIKELY(descno > _idx_mask))
+          throw Bad_avail_entry();
+
         ++_current_avail;
-        return Request(this, _avail->ring[head]);
+
+        return Request(this, descno);
       }
     return Request();
   }
