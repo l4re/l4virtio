@@ -181,8 +181,16 @@ private:
     // own block, fast-forward to the last block.
     if (_rp.has_more())
       {
-        while (_rp.next(_mem_list, &_data) && _todo_blocks > 0)
-          --_todo_blocks;
+        try
+          {
+            while (_rp.next(_mem_list, &_data) && _todo_blocks > 0)
+              --_todo_blocks;
+          }
+        catch (Bad_descriptor const &)
+          {
+            // there was a bad descriptor on the path to the last block
+            return -L4_EIO;
+          }
 
         if (_todo_blocks > 0 && _data.len > 0)
           *(static_cast<l4_uint8_t *>(_data.addr) + _data.len - 1) = status;
