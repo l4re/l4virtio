@@ -551,9 +551,19 @@ protected:
     if (_dev_config.status().fail_state())
       return req;
 
-    auto r = _queue.next_avail();
-    if (!r)
-      return req;
+    Virtqueue::Request r;
+
+    try
+      {
+        r = _queue.next_avail();
+        if (!r)
+          return req;
+      }
+    catch (Bad_avail_entry const &)
+      {
+        this->device_error();
+        return req;
+      }
 
     try
       {
@@ -562,7 +572,7 @@ protected:
 
         req = cxx::move(cur);
       }
-    catch (Bad_descriptor const &e)
+    catch (Bad_descriptor const &)
       {
         this->device_error();
         return req;
