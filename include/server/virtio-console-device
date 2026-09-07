@@ -281,6 +281,8 @@ public:
 
     while (dst.left)
       {
+        bool start_new = false;
+
         try
           {
             // Make sure we have a valid request where we can read data from
@@ -290,9 +292,19 @@ public:
                                          : Virtqueue::Request();
                 if (!p.request.valid())
                   break;
-
-                p.rp.start(mem_info(), p.request, &p.src);
+                start_new = true;
               }
+           }
+         catch (Bad_avail_entry const &)
+           {
+             device_error();
+             break;
+           }
+
+         try
+           {
+            if (start_new)
+              p.rp.start(mem_info(), p.request, &p.src);
 
             total += p.src.copy_to(&dst);
 
@@ -351,9 +363,19 @@ public:
     Request_processor rp;
     while (src.left)
       {
-        auto r = p.rx_ready() ? q->next_avail() : Virtqueue::Request();
-        if (!r.valid())
-          break;
+        Virtqueue::Request r;
+
+        try
+          {
+            r = p.rx_ready() ? q->next_avail() : Virtqueue::Request();
+            if (!r.valid())
+              break;
+          }
+        catch (Bad_avail_entry const &)
+          {
+            device_error();
+            break;
+          }
 
         l4_uint32_t chunk = 0;
         bool failed = false;
