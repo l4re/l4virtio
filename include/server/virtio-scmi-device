@@ -278,8 +278,14 @@ private:
               return 0;
           }
       }
+    catch (L4virtio::Svr::Bad_avail_entry const &)
+      {
+        device_error();
+        return -L4_EINVAL;
+      }
     catch (L4virtio::Svr::Bad_descriptor const &)
       {
+        device_error();
         return -L4_EIO;
       }
     return 0;
