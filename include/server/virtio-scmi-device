@@ -169,7 +169,8 @@ struct Queue_worker : Request_processor
     if (L4_UNLIKELY(!r))
       return false;
 
-    head = start(o->mem_info(), r, &req);
+    head = r;
+    start(o->mem_info(), r, &req);
 
     return true;
   }
@@ -223,6 +224,19 @@ struct Queue_worker : Request_processor
     if (!q->ready())
       return 0;
 
+    l4_ssize_t res = process_request();
+    if (res < 0 && head)
+      {
+        finish(0);
+        head = Virtqueue::Head_desc();
+      }
+
+    return res;
+  }
+
+private:
+  l4_ssize_t process_request()
+  {
     try
       {
         if (!head && L4_UNLIKELY(!init_queue()))
@@ -264,14 +278,13 @@ struct Queue_worker : Request_processor
               return 0;
           }
       }
-    catch (L4virtio::Svr::Bad_descriptor const &e)
+    catch (L4virtio::Svr::Bad_descriptor const &)
       {
-        return e.error;
+        return -L4_EIO;
       }
     return 0;
   }
 
-private:
   struct Buffer : Data_buffer
   {
     Buffer() = default;
