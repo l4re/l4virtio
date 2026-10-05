@@ -541,10 +541,13 @@ public:
    * \param registry      Registry for the notification IRQ of the device.
    * \param p2a_channels  Provide the event queue for notifications and
    *                      delayed responses.
+   * \param msg_user      Debug channel for informational messages relevant
+   *                      for the user, e.g. naming the client.
    */
   explicit Scmi_dev(L4Re::Util::Object_registry *registry,
-                    bool p2a_channels = false)
-  : L4virtio::Svr::Device(&_dev_config),
+                    bool p2a_channels = false,
+                    L4Re::Util::Dbg msg_user = L4Re::Util::Dbg{})
+  : L4virtio::Svr::Device(&_dev_config, msg_user),
    _dev_config(L4VIRTIO_VENDOR_KK, L4VIRTIO_ID_SCMI, p2a_channels ? 2 : 1),
    _registry(registry),
    _host_irq(this),
