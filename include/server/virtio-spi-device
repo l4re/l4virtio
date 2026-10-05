@@ -231,6 +231,9 @@ public:
 
     void handle_request()
     {
+      if (!_q->ready())
+        return;
+
       if (!_head)
         if (!init_queue())
           return;
@@ -264,6 +267,9 @@ public:
 
       _head = Virtqueue::Head_desc();
     }
+
+    void reset()
+    { _head = Virtqueue::Head_desc(); }
 
   private:
     L4virtio::Svr::Virtqueue *_q;
@@ -321,11 +327,14 @@ public:
 
   void reset() override
   {
+    _request_processor.reset();
+    _q.disable();
+    reset_queue_config(0, Queue_size);
   }
 
   bool check_queues() override
   {
-    return true;
+    return _q.ready();
   }
 
   int reconfig_queue(unsigned idx) override
