@@ -381,6 +381,7 @@ public:
   Scmi_dev(L4Re::Util::Object_registry *registry)
   : L4virtio::Svr::Device(&_dev_config),
    _dev_config(L4VIRTIO_VENDOR_KK, L4VIRTIO_ID_SCMI, 1),
+   _registry(registry),
    _host_irq(this),
    _request_worker(this, &_q[0])
   {
@@ -399,6 +400,9 @@ public:
 
     reset();
   }
+
+  ~Scmi_dev()
+  { _registry->unregister_obj(&_host_irq); }
 
   /// Add an actual protocol implementation with the given id to the server.
   void add_proto(l4_uint32_t id, Proto<Scmi_dev> *proto)
@@ -474,6 +478,7 @@ private:
   }
 
   L4virtio::Svr::Dev_config_t<L4virtio::Svr::No_custom_data> _dev_config;
+  L4Re::Util::Object_registry *_registry;
   Host_irq _host_irq;
   L4Re::Util::Unique_cap<L4::Irq> _kick_guest_irq;
   Virtqueue _q[1];
