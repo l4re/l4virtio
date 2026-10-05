@@ -227,7 +227,9 @@ struct Queue_worker : Request_processor
     l4_ssize_t res = process_request();
     if (res < 0 && head)
       {
-        finish(0);
+        // The device might have been reset in the meantime.
+        if (q->ready())
+          finish(0);
         head = Virtqueue::Head_desc();
       }
 
@@ -280,12 +282,12 @@ private:
       }
     catch (L4virtio::Svr::Bad_avail_entry const &)
       {
-        device_error();
+        o->device_error();
         return -L4_EINVAL;
       }
     catch (L4virtio::Svr::Bad_descriptor const &)
       {
-        device_error();
+        o->device_error();
         return -L4_EIO;
       }
     return 0;
