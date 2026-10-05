@@ -215,6 +215,9 @@ public:
 
     void handle_requests()
     {
+      if (!_q->ready())
+        return;
+
       using Consumed_entry =
         cxx::Pair<L4virtio::Svr::Virtqueue::Head_desc, l4_uint32_t>;
       std::vector<Consumed_entry> consumed;
@@ -262,6 +265,12 @@ public:
 
       if (!consumed.empty())
         _q->finish(consumed.begin(), consumed.end(), _i2c);
+    }
+
+    void reset()
+    {
+      _pending_req.reset();
+      _fail_next = false;
     }
 
   private:
@@ -318,11 +327,14 @@ public:
 
   void reset() override
   {
+    _request_processor.reset();
+    _q.disable();
+    reset_queue_config(0, queue_size);
   }
 
   bool check_queues() override
   {
-    return true;
+    return _q.ready();
   }
 
   int reconfig_queue(unsigned idx) override
