@@ -217,6 +217,9 @@ public:
       : _q(q), _req_handler(hndlr), _gpio(gpio), _head(), _req()
     {}
 
+    void reset()
+    { _head = L4virtio::Svr::Virtqueue::Head_desc(); }
+
   protected:
     bool init_queue()
     {
@@ -284,6 +287,9 @@ public:
 
     void handle_request()
     {
+      if (!this->_q->ready())
+        return;
+
       if (!this->_head)
         if (!this->init_queue())
           return;
@@ -384,6 +390,9 @@ public:
 
     void handle_request()
     {
+      if (!this->_q->ready())
+        return;
+
       if (!this->_head)
         if (!this->init_queue())
           return;
@@ -483,10 +492,23 @@ public:
   }
 
   void reset() override
-  {}
+  {
+    _req_processor.reset();
+    _irq_req_processor.reset();
+
+    for (unsigned i = 0; i < sizeof(_q) / sizeof(_q[0]); ++i)
+      {
+        _q[i].disable();
+        reset_queue_config(i, queue_size);
+      }
+  }
 
   bool check_queues() override
-  { return true; }
+  {
+    // The event queue is optional, it is only used if the driver negotiated
+    // the interrupt feature.
+    return _q[0].ready();
+  }
 
   int reconfig_queue(unsigned idx) override
   {
