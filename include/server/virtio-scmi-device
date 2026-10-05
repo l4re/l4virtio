@@ -41,6 +41,14 @@ enum
   Protocol_error = -10
 };
 
+/// SCMI message types
+enum
+{
+  Command = 0,
+  Delayed_response = 2,
+  Notification = 3
+};
+
 /**
  * Largest payload of a message in bytes.
  *
@@ -366,6 +374,79 @@ private:
   Virtqueue *q;
 };
 
+/// A message for the event queue: header and payload
+struct Event_msg
+{
+  l4_uint32_t len = 0;                      ///< Valid bytes in `data`
+  l4_uint32_t data[2 + Max_msg_size / 4];   ///< Header, payload
+};
+
+/**
+ * Fills the buffers of the event queue with notifications and delayed
+ * responses.
+ */
+template<typename OBSERV>
+struct Event_worker : Request_processor
+{
+  Event_worker(OBSERV *o, Virtqueue *queue)
+  : o(o), q(queue)
+  {}
+
+  /**
+   * Put a message into the next buffer the driver provided.
+   *
+   * The message is truncated if the buffer is too small.
+   *
+   * \retval true   The message is in a buffer.
+   * \retval false  The driver provided no buffer.
+   *
+   * \throws Bad_avail_entry  The available ring is broken.
+   * \throws Bad_descriptor   The buffer is broken or not device-writable.
+   */
+  bool put(Event_msg const &msg)
+  {
+    auto r = q->next_avail();
+    if (!r)
+      return false;
+
+    Buffer dst;
+    start(o->mem_info(), r, &dst);
+
+    Data_buffer src;
+    src.pos = reinterpret_cast<char *>(const_cast<l4_uint32_t *>(msg.data));
+    src.left = cxx::min<l4_uint32_t>(msg.len, sizeof(msg.data));
+
+    l4_uint32_t total = 0;
+    for (;;)
+      {
+        if (L4_UNLIKELY(!current_flags().write()))
+          throw Bad_descriptor(this, Bad_descriptor::Bad_rights);
+
+        total += src.copy_to(&dst);
+        if (src.done() || !next(o->mem_info(), &dst))
+          break;
+      }
+
+    q->finish(r, o, total);
+    return true;
+  }
+
+private:
+  struct Buffer : Data_buffer
+  {
+    Buffer() = default;
+    Buffer(L4virtio::Svr::Driver_mem_region const *r,
+           Virtqueue::Desc const &d, Request_processor const *)
+    {
+      pos = static_cast<char *>(r->local(d.addr));
+      left = d.len;
+    }
+  };
+
+  OBSERV *o;
+  Virtqueue *q;
+};
+
 /**
  * Base class for all protocols.
  *
@@ -398,6 +479,11 @@ struct Proto
  * handle messages without decoding them, e.g. to forward them to the SCMI
  * firmware. Its default answers NOT_SUPPORTED.
  *
+ * With `p2a_channels`, the device offers VIRTIO_SCMI_F_P2A_CHANNELS and the
+ * event queue. send_event() puts notifications and delayed responses into the
+ * buffers the driver provides on it. If the driver provided no buffer, the
+ * message waits in a small backlog for the next buffer.
+ *
  * If you want to use this from a Uvmm Linux guest, the device tree needs to
  * look something like this:
  *
@@ -412,6 +498,14 @@ struct Proto
  *      // ... supported protocols ...
  *    };
  *  };
+ *
+ *  virtio_scmi@6000 {
+ *    compatible = "virtio,mmio";
+ *    reg = <0x6000 0x200>;
+ *    interrupts = <0 125 4>;
+ *    l4vmm,vdev = "proxy";
+ *    l4vmm,virtiocap = "scmi";
+ *  };
  * \endcode
  */
 class Scmi_dev : public L4virtio::Svr::Device
@@ -420,6 +514,9 @@ class Scmi_dev : public L4virtio::Svr::Device
   {
     Features() = default;
     Features(l4_uint32_t raw) : L4virtio::Svr::Dev_config::Features(raw) {}
+
+    /// The device implements notifications or delayed responses.
+    CXX_BITFIELD_MEMBER(0, 0, p2a_channels, raw);
   };
 
   struct Host_irq : public L4::Irqep_t<Host_irq>
@@ -431,16 +528,28 @@ class Scmi_dev : public L4virtio::Svr::Device
 
   enum
   {
-    Queue_size = 0x10
+    Queue_size = 0x10,
+    Cmd_queue = 0,
+    Event_queue = 1,
+    Event_backlog = 8,
   };
 
 public:
-  Scmi_dev(L4Re::Util::Object_registry *registry)
+  /**
+   * Create an SCMI device.
+   *
+   * \param registry      Registry for the notification IRQ of the device.
+   * \param p2a_channels  Provide the event queue for notifications and
+   *                      delayed responses.
+   */
+  explicit Scmi_dev(L4Re::Util::Object_registry *registry,
+                    bool p2a_channels = false)
   : L4virtio::Svr::Device(&_dev_config),
-   _dev_config(L4VIRTIO_VENDOR_KK, L4VIRTIO_ID_SCMI, 1),
+   _dev_config(L4VIRTIO_VENDOR_KK, L4VIRTIO_ID_SCMI, p2a_channels ? 2 : 1),
    _registry(registry),
    _host_irq(this),
-   _request_worker(this, &_q[0])
+   _request_worker(this, &_q[Cmd_queue]),
+   _event_worker(this, &_q[Event_queue])
   {
     init_mem_info(2);
 
@@ -449,6 +558,7 @@ public:
 
     Features hf(0);
     hf.ring_indirect_desc() = true;
+    hf.p2a_channels() = p2a_channels;
 
     _dev_config.host_features(0) = hf.raw;
 
@@ -494,6 +604,46 @@ public:
     return sizeof(rsp[0]);
   }
 
+  /// Is the event queue negotiated and set up by the driver?
+  bool event_queue_ready() const
+  {
+    return _dev_config.status().running()
+           && Features(_dev_config.negotiated_features(0)).p2a_channels()
+           && _q[Event_queue].ready();
+  }
+
+  /**
+   * Send a notification or a delayed response to the driver.
+   *
+   * \param hdr      The header of the message.
+   * \param payload  The payload of the message. The payload of a delayed
+   *                 response starts with the status.
+   * \param len      The length of the payload in bytes, at most
+   *                 Max_msg_size + 4.
+   *
+   * \retval true   The message is in a buffer of the driver, or in the
+   *                backlog until the driver provides one.
+   * \retval false  The message was dropped: the event queue is not set up,
+   *                the backlog is full or the message is too long.
+   */
+  bool send_event(Scmi_hdr_t const &hdr, l4_uint32_t const *payload,
+                  l4_size_t len)
+  {
+    if (!event_queue_ready() || len > Max_msg_size + 4)
+      return false;
+
+    if (!flush_events() || _backlog_cnt == Event_backlog)
+      return false;
+
+    Event_msg &m = _backlog[(_backlog_first + _backlog_cnt) % Event_backlog];
+    m.data[0] = hdr.hdr_raw;
+    memcpy(&m.data[1], payload, len);
+    m.len = sizeof(m.data[0]) + len;
+    ++_backlog_cnt;
+
+    return flush_events();
+  }
+
   void notify_queue(L4virtio::Virtqueue *queue)
   {
     if (queue->no_notify_guest())
@@ -519,6 +669,41 @@ private:
   {
     if (_request_worker.handle_request() < 0)
       device_error();
+
+    // The driver might have provided new buffers for the backlog.
+    flush_events();
+  }
+
+  /**
+   * Move messages from the backlog into the buffers of the driver.
+   *
+   * \retval false  The event queue is broken, the device was reset.
+   */
+  bool flush_events()
+  {
+    if (!_backlog_cnt || !event_queue_ready())
+      return true;
+
+    try
+      {
+        while (_backlog_cnt && _event_worker.put(_backlog[_backlog_first]))
+          {
+            _backlog_first = (_backlog_first + 1) % Event_backlog;
+            --_backlog_cnt;
+          }
+      }
+    catch (L4virtio::Svr::Bad_avail_entry const &)
+      {
+        device_error();
+        return false;
+      }
+    catch (L4virtio::Svr::Bad_descriptor const &)
+      {
+        device_error();
+        return false;
+      }
+
+    return true;
   }
 
   void reset() override
@@ -528,20 +713,20 @@ private:
 
     for (l4_uint32_t i = 0; i < _dev_config.num_queues(); i++)
       reset_queue_config(i, Queue_size);
+
+    _backlog_first = 0;
+    _backlog_cnt = 0;
   }
 
   bool check_queues() override
   {
-    for (Virtqueue &q : _q)
-      if (!q.ready())
-        return false;
-
-    return true;
+    // The event queue is optional.
+    return _q[Cmd_queue].ready();
   }
 
   int reconfig_queue(unsigned idx) override
   {
-    if (idx >= sizeof(_q) / sizeof(_q[0]))
+    if (idx >= _dev_config.num_queues())
       return -L4_ERANGE;
 
     if (!setup_queue(_q + idx, idx, Queue_size))
@@ -560,9 +745,13 @@ private:
   L4Re::Util::Object_registry *_registry;
   Host_irq _host_irq;
   L4Re::Util::Unique_cap<L4::Irq> _kick_guest_irq;
-  Virtqueue _q[1];
+  Virtqueue _q[2];
   Queue_worker<Scmi_dev> _request_worker;
+  Event_worker<Scmi_dev> _event_worker;
   std::map<l4_uint32_t, Proto<Scmi_dev> *> _protos;
+  Event_msg _backlog[Event_backlog];
+  unsigned _backlog_first = 0;
+  unsigned _backlog_cnt = 0;
 };
 
 /**
