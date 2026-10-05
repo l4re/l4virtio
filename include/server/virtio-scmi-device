@@ -41,6 +41,16 @@ enum
   Protocol_error = -10
 };
 
+/**
+ * Largest payload of a message in bytes.
+ *
+ * The status of a response or of a delayed response comes on top of it.
+ */
+enum
+{
+  Max_msg_size = 128
+};
+
 /// SCMI header
 struct Scmi_hdr_t
 {
@@ -237,6 +247,54 @@ struct Queue_worker : Request_processor
   }
 
 private:
+  /**
+   * Hand a message without a Proto to the raw handler of the device.
+   *
+   * The rest of the device-readable part of the request is the payload of
+   * the message. The response goes into the device-writable part, truncated
+   * if it does not fit.
+   */
+  l4_ssize_t handle_raw(Data_buffer *buf, Scmi_hdr_t &hdr)
+  {
+    l4_uint32_t payload[Max_msg_size / 4];
+    Data_buffer in(&payload);
+    bool too_long = false;
+    while (!current_flags().write())
+      {
+        req.copy_to(&in);
+        if (!req.done())
+          {
+            too_long = true;
+            req.skip(req.left);
+          }
+        if (!next())
+          break;
+      }
+
+    l4_uint32_t rsp[Max_msg_size / 4 + 1];
+    l4_size_t rsp_len = sizeof(rsp[0]);
+    if (too_long)
+      rsp[0] = static_cast<l4_uint32_t>(Protocol_error);
+    else
+      rsp_len = o->handle_raw(hdr, payload, sizeof(payload) - in.left,
+                              rsp, sizeof(rsp));
+
+    l4_ssize_t res = write(buf, &hdr);
+    if (res < 0)
+      return res;
+
+    buf->pos = reinterpret_cast<char *>(rsp);
+    buf->left = cxx::min(rsp_len, sizeof(rsp));
+    for (;;)
+      {
+        res += buf->copy_to(&req);
+        if (buf->done() || (req.done() && !next()))
+          break;
+      }
+
+    return res;
+  }
+
   l4_ssize_t process_request()
   {
     try
@@ -263,12 +321,7 @@ private:
               }
             else
               {
-                if ((res = write(&buf, &hdr)) < 0)
-                  return res;
-                total += res;
-
-                l4_int32_t status = Not_supported;
-                if ((res = write(&buf, &status)) < 0)
+                if ((res = handle_raw(&buf, hdr)) < 0)
                   return res;
                 total += res;
               }
@@ -340,6 +393,10 @@ struct Proto
  * Right now, support for the base and the performance protocol is provided.
  *
  * The base protocol is mandatory.
+ *
+ * Messages of protocols without a Proto go to handle_raw(). Override it to
+ * handle messages without decoding them, e.g. to forward them to the SCMI
+ * firmware. Its default answers NOT_SUPPORTED.
  *
  * If you want to use this from a Uvmm Linux guest, the device tree needs to
  * look something like this:
@@ -413,6 +470,28 @@ public:
     if (_protos.find(id) != _protos.end())
       return _protos.at(id);
     return nullptr;
+  }
+
+  /**
+   * Handle a message of a protocol without a Proto.
+   *
+   * \param      hdr      The header of the message.
+   * \param      payload  The payload of the message.
+   * \param      len      The length of the payload in bytes, at most
+   *                      Max_msg_size.
+   * \param[out] rsp      The payload of the response, starting with the
+   *                      status.
+   * \param      rsp_max  The size of `rsp` in bytes, Max_msg_size + 4.
+   *
+   * \return The length of the payload of the response in bytes.
+   */
+  virtual l4_size_t handle_raw(Scmi_hdr_t const & /* hdr */,
+                               l4_uint32_t const * /* payload */,
+                               l4_size_t /* len */,
+                               l4_uint32_t *rsp, l4_size_t /* rsp_max */)
+  {
+    rsp[0] = static_cast<l4_uint32_t>(Not_supported);
+    return sizeof(rsp[0]);
   }
 
   void notify_queue(L4virtio::Virtqueue *queue)
