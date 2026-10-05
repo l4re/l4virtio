@@ -87,12 +87,26 @@ public:
 
     bool init_queue()
     {
-      auto r = _q->next_avail();
+      L4virtio::Svr::Virtqueue::Request r;
 
-      if (L4_UNLIKELY(!r))
-        return false;
-
-      _head = start(_rng->mem_info(), r, &_req);
+      try
+        {
+          r = _q->next_avail();
+          if (L4_UNLIKELY(!r))
+            return false;
+          _head = start(_rng->mem_info(), r, &_req);
+        }
+      catch (L4virtio::Svr::Bad_avail_entry const &)
+        {
+          _rng->device_error();
+          return false;
+        }
+      catch (L4virtio::Svr::Bad_descriptor const &)
+        {
+          _q->finish(r, _rng);
+          _rng->device_error();
+          return false;
+        }
 
       return true;
     }
