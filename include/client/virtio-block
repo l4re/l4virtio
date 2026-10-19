@@ -373,7 +373,7 @@ public:
         if (descno >= _queue.num() || _pending[descno].tail == Virtqueue::Eoq)
           L4Re::chksys(-L4_ENOSYS, "Bad descriptor number");
 
-        unsigned char status = _status[descno];
+        unsigned char status = _status[_pending[descno].tail];
         free_request(Handle(descno));
 
         if (_pending[descno].callback)
