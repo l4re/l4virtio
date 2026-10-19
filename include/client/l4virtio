@@ -85,6 +85,13 @@ public:
     if (_config->version != 2)
       L4Re::chksys(-L4_ENODEV, "Invalid virtio version, must be 2");
 
+    if (_config->queues_offset < sizeof(l4virtio_config_hdr_t)
+        || _config->queues_offset > L4_PAGESIZE
+        || ((L4_PAGESIZE - _config->queues_offset)
+            / sizeof(l4virtio_config_queue_t))
+             < _config->num_queues)
+      L4Re::chksys(-L4_ENODEV, "Queue configuration offset is out of range.");
+
     _device->set_status(0); // reset
     int status = L4VIRTIO_STATUS_ACKNOWLEDGE;
     _device->set_status(status);
