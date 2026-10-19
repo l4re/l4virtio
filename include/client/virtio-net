@@ -89,9 +89,9 @@ public:
 
     // Allocate memory for RX/TX queue and RX/TX packet buffers
     auto rxqoff = 0;
-    auto txqoff = l4_round_size(rxqoff + rxqsz * _rxq.total_size(rxqsz),
+    auto txqoff = l4_round_size(rxqoff + _rxq.total_size(rxqsz),
                                 L4virtio::Virtqueue::Desc_align);
-    auto rxpktoff = l4_round_size(txqoff + txqsz * _txq.total_size(txqsz),
+    auto rxpktoff = l4_round_size(txqoff + _txq.total_size(txqsz),
                                   L4virtio::Virtqueue::Desc_align);
     auto txpktoff = rxpktoff + rxqsz * sizeof(Packet);
     auto totalsz = txpktoff + txqsz * sizeof(Packet);
