@@ -99,25 +99,26 @@ public:
     auto *e = L4Re::Env::env();
 
     if (queue_ds)
-      _queue_ds = L4Re::Util::Unique_cap<L4Re::Dataspace>(queue_ds);
+      _queue_ds = queue_ds;
     else
       {
-        _queue_ds = L4Re::chkcap(L4Re::Util::make_unique_cap<L4Re::Dataspace>(),
-                                 "Allocate queue dataspace capability");
-        L4Re::chksys(e->mem_alloc()->alloc(totalsz, _queue_ds.get(),
+        _ds = L4Re::chkcap(L4Re::Util::make_unique_cap<L4Re::Dataspace>(),
+                           "Allocate queue dataspace capability");
+        L4Re::chksys(e->mem_alloc()->alloc(totalsz, _ds.get(),
                                            L4Re::Mem_alloc::Continuous
                                            | L4Re::Mem_alloc::Pinned),
                      "Allocate memory for virtio structures");
+        _queue_ds = _ds.get();
       }
 
     L4Re::chksys(e->rm()->attach(&_queue_region, totalsz,
                                  L4Re::Rm::F::Search_addr | L4Re::Rm::F::RW,
-                                 L4::Ipc::make_cap_rw(_queue_ds.get()), 0,
+                                 L4::Ipc::make_cap_rw(_queue_ds), 0,
                                  L4_PAGESHIFT),
                  "Attach dataspace for virtio structures");
 
     l4_uint64_t devaddr;
-    L4Re::chksys(register_ds(_queue_ds.get(), 0, totalsz, &devaddr),
+    L4Re::chksys(register_ds(_queue_ds, 0, totalsz, &devaddr),
                  "Register queue dataspace with device");
 
     _rxq.init_queue(rxqsz, _queue_region.get() + rxqoff, msg_dev);
@@ -330,7 +331,8 @@ private:
   }
 
 private:
-  L4Re::Util::Unique_cap<L4Re::Dataspace> _queue_ds;
+  L4Re::Util::Unique_cap<L4Re::Dataspace> _ds;
+  L4::Cap<L4Re::Dataspace> _queue_ds;
   L4Re::Rm::Unique_region<l4_uint8_t *> _queue_region;
   L4Re::Util::Unique_cap<L4::Irq> _driver_notification_irq;
   L4virtio::Driver::Virtqueue _rxq, _txq;
