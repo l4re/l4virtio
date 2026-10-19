@@ -224,9 +224,15 @@ public:
     l4_uint16_t descno = _rxq.find_next_used(len);
 
     if (len && descno != Virtqueue::Eoq)
-      // Ensure that the length provided by the device in wait_for_next_used()
-      // is not larger than the buffer and subtract the length of the header.
-      *len = cxx::min(*len - sizeof(_rxpkts[0].hdr), sizeof(_rxpkts[0].data));
+      {
+        // Ensure that the length provided by the device in wait_for_next_used()
+        // is not larger than the buffer and subtract the length of the header.
+        if (*len >= sizeof(_rxpkts[0].hdr))
+          *len =
+            cxx::min(*len - sizeof(_rxpkts[0].hdr), sizeof(_rxpkts[0].data));
+        else
+          *len = 0;
+      }
     return descno;
   }
 
