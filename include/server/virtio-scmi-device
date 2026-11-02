@@ -598,10 +598,11 @@ public:
    *
    * \return The length of the payload of the response in bytes.
    */
-  virtual l4_size_t handle_raw(Scmi_hdr_t const & /* hdr */,
-                               l4_uint32_t const * /* payload */,
-                               l4_size_t /* len */,
-                               l4_uint32_t *rsp, l4_size_t /* rsp_max */)
+  virtual l4_size_t handle_raw([[maybe_unused]] Scmi_hdr_t const &hdr,
+                               [[maybe_unused]] l4_uint32_t const *payload,
+                               [[maybe_unused]] l4_size_t len,
+                               l4_uint32_t *rsp,
+                               [[maybe_unused]] l4_size_t rsp_max)
   {
     rsp[0] = static_cast<l4_uint32_t>(Not_supported);
     return sizeof(rsp[0]);
